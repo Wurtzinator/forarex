@@ -1,0 +1,146 @@
+
+---
+title: "Forarex Parabel flight"
+subtitle: "First data preparation and analysis"
+author: "Diren"
+output:
+  html_document:
+  toc: true
+toc_depth: 3
+code_folding: hide
+number_sections: TRUE
+---
+  
+# Introduction
+  We can do some exploratory analysis in this r-mark-down file and document it at the same time.
+  
+# Combine the data to single files
+  Sofar, there were multiple files with the same heading. For data analysis, we need to combine them to a single file. Some of the files do not contain data at all or have some weird formating. This files will be ignored by the script. There will be some information which files have been ignored and why to be read in the terminal.
+The files will be saved under allFlighdata.csv / allPostflightdata.csv.
+
+```{r eval = F}
+combine <- function(dir, finalName){
+  # Purpose: the function can combine the files and save to a new csv
+  # Parameters:
+  #  dir: the directory of the files to be combined
+  #  finalName: the name of the file to be used to save the csv
+  
+  # list all files in directory
+  files <- list.files(path = dir)
+  print(files)
+  for(i in 1:length(files)){
+    # use try-catch blog to find out, whether the formating of the file is ok
+    tryCatch({
+              if(!exists("foradata")){
+                # if this is the first file to be read, we just read the file
+                foradata <- read.table(paste(dir, files[i], sep=""), header = T, sep = ",")
+              }else{
+                # if we read data before, we combine it with the current file
+                foradata <- rbind(foradata, read.table(paste(dir, files[i], sep=""), header = T, sep = ","))
+              }
+        },
+        # handling of warnings, if there was some weird formating
+    warning = function(warning_condition){
+      print(paste("Skipping file", files[i]))
+      print(warning_condition)
+    },
+    # handling of errors, if there was some wrong formating
+    error = function(error_condition){
+      print(paste("Skipping file", files[i]))
+      print(error_condition)
+    })
+    
+  }
+  # save the table
+  write.table(foradata, file = finalName, sep = ",", row.names = F)
+}
+# call the function
+
+setwd('/home/taco/Documents/greta_forarex/')
+combine("data/experiment/exp_raw_pre_and_flight/", "exp_merged_pre_and_flight.csv")
+
+
+combine("Postflight/", "allPostflightdata.csv")
+```
+Let's convert the units of the measurements. Furthermore, we can skip the columns, where all measurements are the same.
+```{r}
+flight <- read.table("allFlighdata.csv", header = T, sep = ",")
+# Convert Timestamp
+flight$timeStamp <- as.POSIXct(flight$timeStamp, origin="1970-01-01")
+# Show Measurement Period
+# First and last measurement:
+min(flight$timeStamp)
+max(flight$timeStamp)
+####### Todo: convert temperature, ... #############
+flight$Exp0_OxygenTemp <- flight$Exp0_OxygenTemp/1000
+####### Todo: convert oxygen percentage, ... #############
+flight$Exp0_OxygenpercentO2 <- flight$Exp0_OxygenpercentO2/1000
+# Let's exclude the variables, where all measurements are the same
+flight.sub <- flight[, as.logical(lapply(flight, function(x){min(x)!=max(x)}))]
+# in this way, we end up with 43 instead of 70 columns
+ncol(flight)
+ncol(flight.sub)
+# Here is a summary over all variables:
+summary(flight.sub)
+# We also create a subset starting with measurements from the morning before the flight
+flight.subtime <- flight[flight.sub$timeStamp>as.POSIXct("2019-03-11 10:15:00"),]
+#### save the csv-file ####
+write.table(flight,"alltransformedflightdata.csv", sep = "," , row.names = F)
+```
+We are ready to come up with some basic plots. First, we define groups of covariates we want to look at together. Then we plot them for the whole interval, and for the flight period only.
+The take-off is indicated by the red, dashed line.
+```{r}
+library(ggplot2)
+library(reshape2)
+# let's define a function which makes the plot, so that we can reuse it
+plot.seperate <- function(filename, data, covariate.names){
+  # Parameters:
+  #  filename: filedirectory to save the plot
+  #  data: data to be used, e.g. whole period
+  #  covariate.names: names of the covariates to be plotted
+  
+ # png(filename) # (does not work for rmarkdown)
+  flight.melt <- melt(data[, c("timeStamp",covariate.names)], id.vars = 'timeStamp')
+ggplot(flight.melt, aes(x = timeStamp, y = value)) + 
+    geom_line() +  xlab("Time") + ylab("Value") +
+    facet_wrap(~ variable, scales = 'free_y', ncol = 1) + geom_vline(xintercept=as.POSIXct("2019-03-11 10:20:00"), colour="#BB0000", linetype="dashed")
+#while (!is.null(dev.list()))  dev.off()
+}
+# all containing oxygen in their name
+ox0 <- grep("Exp0_Oxygen", names(flight.sub), value=T)
+ox1 <- grep("Exp1_Oxygen", names(flight.sub), value=T)
+temp <- grep("Temp", names(flight.sub), value=T)
+plot.seperate("plots/Exp0_Oxygen.png", flight.sub, ox0 )
+plot.seperate("plots/Exp0_OxygenflightTime.png", flight.subtime, ox0 )
+plot.seperate("plots/Exp1_Oxygen.png", flight.sub, ox1 )
+plot.seperate("plots/Exp1_OxygenflightTime.png", flight.subtime, ox1 )
+plot.seperate("plots/Temp.png", flight.sub, temp )
+plot.seperate("plots/TempFligthTime.png", flight.subtime, temp)
+
+```
+Let's look at some correlations. This is just an overview, we have to look at statistical significance in detail.
+```{r}
+panel.cor <- function(x, y, digits=2, prefix="", cex.cor) 
+{
+  usr <- par("usr"); on.exit(par(usr)) 
+  par(usr = c(0, 1, 0, 1)) 
+  r <- abs(cor(x, y, use="complete.obs")) 
+  txt <- format(c(r, 0.123456789), digits=digits)[1] 
+  txt <- paste(prefix, txt, sep="") 
+  if(missing(cex.cor)) cex <- 0.8/strwidth(txt) 
+  
+  test <- cor.test(x,y) 
+  # borrowed from printCoefmat
+  Signif <- symnum(test$p.value, corr = FALSE, na = FALSE, 
+                   cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1),
+                   symbols = c("***", "**", "*", ".", " ")) 
+  
+  text(0.5, 0.5, txt, cex = cex * r) 
+  text(.8, .8, Signif, cex=cex, col=2) 
+}
+#pairs(merged[, 2:7], lower.panel=panel.smooth, upper.panel=panel.cor)
+
+pairs(flight.subtime[,2:10], lower.panel=panel.smooth, upper.panel=panel.cor)
+pairs(flight.sub[,2:10])
+```
+
